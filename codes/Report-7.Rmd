@@ -1,0 +1,161 @@
+---
+title: "Report_7"
+author: "Khaled Hasan"
+date: "2024-05-06"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(fpp2)
+library(tseries)
+library(urca)
+library(FinTS)
+```
+
+## Data
+```{r}
+GLOBALTEMPERATURE = read.csv(file = "C:\\Users/ss/Desktop/Time_series_Analysis/MyGlobalTemperetures.csv")
+global_temp = ts(GLOBALTEMPERATURE[,1], start = c(1850, 1), frequency = 12)
+northern_temp = ts(GLOBALTEMPERATURE[,2], start = c(1850, 1), frequency = 12)
+southern_temp = ts(GLOBALTEMPERATURE[,3], start = c(1850, 1), frequency = 12)
+Regional_temp = read.csv(file = "C:/Users/ss/Desktop/Time_series_Analysis/Regional_temperetures_data.csv")
+Africa_temp = ts(Regional_temp[, 2], start = c(1850, 1), frequency = 12)
+Europe_temp = ts(Regional_temp[, 3], start = c(1850, 1), frequency = 12)
+MidlleEast_temp = ts(Regional_temp[, 4], start = c(1850, 1), frequency = 12)
+NorthAmerica_temp = ts(Regional_temp[, 5], start = c(1850, 1), frequency = 12)
+time = ts(Regional_temp[, 1], start = c(1850, 1), frequency = 12)
+```
+
+## Plots
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+
+autoplot1 <- autoplot(window(global_temp, start = c(2000, 1), freq = 12), ylab = "global")
+
+autoplot2 <- autoplot(window(northern_temp, start = c(2000, 1), freq = 12), ylab = "Northern")
+
+autoplot3 <- autoplot(window(southern_temp, start = c(2000, 1), freq = 12), ylab = "Southern")
+
+par(mfrow = c(1, 3))
+plot(autoplot1)
+plot(autoplot2)
+plot(autoplot3)
+
+layout(matrix(c(1, 2, 3), nrow = 1))
+grid.arrange(autoplot1, autoplot2, autoplot3)
+```
+
+## Arima Fitting Function:
+
+```{r}
+Arima_fittng <- function(timeseries, startingPoint = start(timeseries), endingPoint = end(timeseries)){
+  cutted_data = window(timeseries, start = startingPoint, end = endingPoint, freq = 12)
+  t = seq_along(cutted_data)
+  regressors = cbind(sin(pi/6*t), cos(pi/6*t), t)
+  arima_fit = auto.arima(cutted_data, xreg = regressors, approximation = FALSE, seasonal = TRUE)
+  return(arima_fit)
+}
+
+global_fitting_sarima = Arima_fittng(global_temp, startingPoint = c(1980, 1))
+
+summary(global_fitting_sarima)
+```
+
+```{r}
+forecast_reg <- function(model, h){
+  t_forecast = (0):(h)
+  forecasting_regressors = cbind(sin(t_forecast*pi/6), cos(t_forecast*pi/6), t_forecast)
+  model %>% forecast(xreg = forecasting_regressors) %>% autoplot() %>% return()
+}
+
+forecast_reg(global_fitting_sarima, 24)
+```
+
+```{r}
+checkresiduals(global_fitting_sarima)
+```
+(Ar2- frequency?)
+
+```{r}
+
+linear_coef <- function(DATA, x, Ord, sOrd, radius = 2){
+  temporary_data = window(DATA, start = c(x-radius, 1), end = c(x+radius, 1))
+  new_t <- seq_along(temporary_data)
+  temporary_xreg = cbind(
+    sin(new_t*pi/6),
+    cos(new_t*pi/6),
+    new_t
+  )
+  temporary_model = Arima(y = temporary_data, order = Ord, seasonal = sOrd, xreg = temporary_xreg)
+  std_error <- sqrt(diag(vcov(temporary_model)))
+  return(c(as.numeric(temporary_model$coef["new_t"]), as.numeric(sqrt(diag(vcov(temporary_model)))["new_t"])))
+}
+
+plot_Global_warming <- function(timeseries){
+  arima_fit = Arima_fittng(timeseries, startingPoint = c(1980, 1))
+  
+  
+  ord = arima_fit$arma
+  p = ord[1]; q = ord[2]; P = ord[3]; Q = ord[4]; period = ord[5]; d = ord[6]; D = ord[7];
+  
+  parameters =c()
+  errors = c()
+  rad = 20
+
+  for (i in (1850 + rad):(2023 - rad)){
+      u = linear_coef(timeseries,  i, c(p, d, q), c(P, D, Q) , rad)
+      parameters <- cbind(parameters, u[1])
+      errors <- cbind(errors, u[2])
+  }
+  
+  t_vals = c((1850 + rad):(2023 - rad))
+  
+  MyPlot = (plot(t_vals, parameters, type='b', main=paste("c\nradius: ", toString(rad)), ylim = c(-0.005, 0.005)) +
+    arrows(x0=t_vals, y0=parameters-errors, x1 = t_vals, y1=parameters+errors, code=3, angle = 90, length = 0.1))
+  
+  return(list(arima_fit, parameters, errors, MyPlot))
+  
+}
+
+Results_for_global = plot_Global_warming(global_temp)
+```
+
+### Northern Hemisphere
+```{r}
+Results_for_northern = plot_Global_warming(northern_temp)
+```
+
+### Southern Hemishpere
+```{r}
+Results_for_southern = plot_Global_warming(southern_temp)
+```
+
+
+### Africa
+```{r}
+Results_for_Africa = plot_Global_warming(Africa_temp)
+```
+
+### Europe
+```{r}
+Results_for_Europe = plot_Global_warming(Europe_temp)
+```
+
+### Middle East
+```{r}
+Results_for_ME = plot_Global_warming(MidlleEast_temp)
+```
+
+### North America
+```{r}
+Results_for_NA = plot_Global_warming(NorthAmerica_temp)
+```
+
+

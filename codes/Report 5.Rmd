@@ -1,0 +1,289 @@
+---
+title: "Report 5"
+author: "Khaled Hasan"
+date: "2024-03-28"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(fpp2)
+library(tseries)
+library(urca)
+library(FinTS)
+```
+
+## Import the data:
+
+import 10 years real interest rate time series from csv
+(source:https://fred.stlouisfed.org/graph/?g=1hoLl):
+
+```{r import data and convert to time series}
+REAINTRATREARAT10Y <- read.csv("C:\\Users\\ss\\Downloads\\REAINTRATREARAT10Y.csv")
+interest <- ts(REAINTRATREARAT10Y[, "REAINTRATREARAT10Y"], frequency = 12, start = c(1982, 1))
+autoplot(interest)
+```
+
+cut a window starting from year 2000
+
+```{r}
+interest2 <- window(interest, frequency = 12, start = c(2000, 1))
+autoplot(interest2)
+```
+
+Excluding the post pandamic era (2020-):
+```{r}
+interest_precovid = window(interest2, frequency = 12, end=c(2019, 12))
+
+autoplot(interest_precovid)
+```
+# GARCH
+
+## Arch test:
+
+First I will use Arch LM-test to determine whether Arch effects are present
+
+```{r}
+ArchTest(interest2)
+```
+
+Since $p \ll 0.01$ $H_0$ is rejected, and we take $H_a$ instead, which is that there are arcg effects and therefore using garch model is reasonable.
+
+## GARCH order
+
+```{r}
+garch(interest2, control = garch.control(grad="numeric", trace = FALSE))
+```
+
+I will therefore assume the model to be a garch(1, 1) (the default) 
+
+## GARCH fit
+
+```{r}
+garch_fit = rugarch::ugarchfit(rugarch::ugarchspec(), interest2)
+garch_fit
+```
+
+
+```{r}
+{
+garch_fit_results = ts(fitted(garch_fit@fit), start = c(2000, 1), frequency = 12)
+plot(garch_fit_results, type = "l", col = "blue", xlab = "Time", ylab = "Values", main = "Fitted Series")
+lines(interest2, col = "red")
+legend("topright", legend = c("Fitted", "interest2"), col = c("blue", "red"), lty = 1)
+}
+```
+
+
+```{r}
+checkresiduals(garch_fit@fit)
+```
+
+
+arima fit for comparison sake:
+
+```{r}
+arimafit = auto.arima(interest2, stepwise = FALSE, approximation = FALSE)
+residuals_of_arima_fit = residuals(arimafit)
+```
+
+
+
+Now I will compare the aic of the 2 fits:
+
+```{r}
+{
+print(AIC(arimafit))
+print(-2*garch_fit@fit$LLH + 2*length(garch_fit@fit$coef))
+}
+```
+
+The AIC values suggests that the garch model is performing better than the Arima fit.
+
+## Forcasting
+
+I used "ugarchforecast" function, unfortunately this was not compatible with the forecast function from forecast library. Therefore I had to do the plotting manually
+
+```{r}
+garchForecast = rugarch::ugarchforecast(garch_fit, n.ahead = 12)
+
+garchForecastVals = ts(garchForecast@forecast$seriesFor, start = c(2024, 2), frequency = 12)
+
+Low1 = ts(-garchForecast@forecast$sigmaFor + garchForecast@forecast$seriesFor, start = c(2024, 2), frequency = 12)
+
+High1 = ts(garchForecast@forecast$sigmaFor + garchForecast@forecast$seriesFor, start = c(2024, 2), frequency = 12)
+
+autoplot(interest2)+autolayer(garchForecastVals, series = "garch forecast")+autolayer(Low1, series = "-1 sigma") + autolayer(High1, series = "+1 sigma")
+```
+
+
+## Testing other models
+
+
+Below is an AIC table for different orders of garch models, the table suggests that the best model for the data at hand is the garch (1, 1) model.
+
+```{r}
+
+AICgarch <- function(ord){
+    garFit = rugarch::ugarchfit(rugarch::ugarchspec(variance.model = list(garchOrder=ord)), interest2)
+    return(-2*garFit@fit$LLH + 2*length(garFit@fit$coef))
+}
+
+results <- matrix(NA, nrow = 10, ncol = 10)
+
+for (i in 0:9) {
+    for (j in 0:9) {
+      if(j == 0 && i == 0){
+        results[1, 1] <- -1
+      }else {
+        results[i+1, j+1] <- AICgarch(c(i, j))
+      }
+    }
+}
+
+print(results)
+```
+
+
+# Temperature Data
+
+```{r}
+
+GLOBALTEMPERATURE = read.csv(file = "C:\\Users/ss/Desktop/Time_series_Analysis/GlobalTemperatures_1900.csv")
+temperatures <- ts(GLOBALTEMPERATURE[8], frequency = 12, start = c(1900, 1))
+uncertainties <- ts(GLOBALTEMPERATURE[9], frequency = 12, start = c(1900, 1))
+```
+
+
+
+```{r}
+autoplot(temperatures)
+```
+
+
+
+The data looks too noisy, and it seems impossible to dray any useful conclusions from it
+
+I will first cut the data from year 2000 onwards
+```{r}
+temp_2000 <- window(temperatures, start = c(2000, 1))
+```
+
+
+```{r}
+ggseasonplot(temperatures)
+```
+
+```{r}
+ggseasonplot(temp_2000)
+```
+
+a clear seasonality is shown, where the temperature tend to be at a maximum between june and August (summer), there is also a general upward trend in the data.
+
+if we looked at a polar version of the data
+
+```{r}
+ggseasonplot(temp_2000, polar = TRUE)
+```
+
+
+```{r}
+ggsubseriesplot(temp_2000)
+```
+
+
+## Stationarity
+
+Dicky-Fuller test ($H_0$: data is not stationary ($H_0$: unit root exists):
+```{r}
+adf.test(temp_2000, k = 1)
+```
+
+The dicky Fuller test suggested that the data is stationary ($H_a$ is accepted) which is weird considering the general upward trend one can notice in the data. Trying with KPASS test ($H_0:$ data is stationary)
+
+```{r}
+kpss.test(temp_2000)
+```
+
+again, the hypothesis that the data is stationary was not rejected, which means that the data might be stationary, despite the general trend in the data.
+
+by applying both tests on the original dataset:
+
+```{r}
+{print(adf.test(temperatures))
+print(kpss.test(temperatures))}
+```
+
+since $p\ll 0.01$ in KPSS test, $H_0$ is rejected which implies that the data is not stationary. the $p$ value for the Dicky-Fuller test is also small.
+
+check the differentiated data:
+```{r}
+{print(adf.test(diff(temperatures)))
+print(kpss.test(diff(temperatures)))}
+```
+the differentiated data is stationary.
+
+Despite no indication that the data has changed its trend, using a subset of the data seems to have introduced a bias in which the subset seemed stationary while it is not. maybe in this specific case, the predicted overall slope was considered to be too small to be significant. which made it the unstability unpredictable by the KPSS and ADF tests.
+
+## Fitting arima model
+
+```{r}
+ggAcf(diff(temp_2000, lag = 12))
+```
+```{r}
+ggPacf(diff(temp_2000, lag = 12))
+```
+
+```{r}
+ggAcf(temp_2000)
+```
+```{r}
+ggPacf(temp_2000)
+```
+
+in terms of the seasonal parts, there are strong spikes in the ACF plot at the seasonal lag$=12$ similar argument with the PACF plot. Whereas in the non-seasonal parts, we have spikes at $p = 1, 2$ and the ACF is sinusoidal $(q=0)$
+
+which suggests a sARIMA model of order (0, 1, 1)[12], (1, 1, 0)[12] or (1,1 , 1)[12] and the non-seasonal part is (1, 0, 0), (2, 0, 0)
+
+Using auto.arima:
+```{r}
+temp_arima_fit <- auto.arima(temp_2000, approximation = FALSE, stepwise = FALSE)
+summary(temp_arima_fit)
+```
+
+trying other models
+```{r}
+print(c(
+  AIC(Arima(temp_2000, c(2, 0, 0), c(1, 1, 1), include.drift = TRUE))<AIC(temp_arima_fit),
+  AIC(Arima(temp_2000, c(1, 0, 0), c(1, 1, 1), include.drift = TRUE))<AIC(temp_arima_fit),
+  AIC(Arima(temp_2000, c(2, 0, 0), c(0, 1, 1), include.drift = TRUE))<AIC(temp_arima_fit),
+  AIC(Arima(temp_2000, c(1, 0, 0), c(0, 1, 1), include.drift = TRUE))<AIC(temp_arima_fit),
+  AIC(Arima(temp_2000, c(2, 0, 0), c(1, 1, 0), include.drift = TRUE))<AIC(temp_arima_fit),
+  AIC(Arima(temp_2000, c(1, 0, 0), c(1, 1, 0), include.drift = TRUE))<AIC(temp_arima_fit)
+))
+```
+
+
+## Forcasting
+```{r}
+arima_Forecast_temp = forecast(temp_arima_fit, h = 120)
+arima_Forecast_temp
+```
+
+```{r}
+autoplot(arima_Forecast_temp)
+```
+
+
+the forecasted value on jan 2024 was $14.33796\text{ }^oC$ which is bigger than the real value $13.14\text{ }^oC$.
+
+
+
+## residuals check
+```{r}
+checkresiduals(arima_Forecast_temp, lag = 12)
+```
+

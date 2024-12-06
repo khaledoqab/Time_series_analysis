@@ -1,0 +1,318 @@
+---
+title: "Report6"
+author: "Khaled Hasan"
+date: "2024-04-11"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(fpp2)
+library(tseries)
+library(urca)
+library(FinTS)
+```
+
+
+# Temperature Data
+
+```{r}
+GLOBALTEMPERATURE = read.csv(file = "C:\\Users/ss/Desktop/Time_series_Analysis/out2.csv")
+temperatures <- ts(GLOBALTEMPERATURE[, "Anomaly"], frequency = 12, start = c(1880, 1))
+```
+
+The data was obtained from berkeley earth website https://berkeley-earth-temperature.s3.us-west-1.amazonaws.com/Global/Complete_TAVG_daily.txt
+
+
+```{r}
+autoplot(temperatures)
+```
+
+
+
+The data looks too noisy, and it seems impossible to dray any useful conclusions from it
+
+I will first cut the data from year 2000 onwards
+```{r}
+temp_2000 <- window(temperatures, start = c(2000, 1))
+```
+
+
+```{r}
+ggseasonplot(temp_2000)
+```
+
+```{r}
+ggseasonplot(temperatures)
+```
+
+a clear seasonality is shown, where the temperature tend to be at a maximum between june and August (summer), there is also a general upward trend in the data.
+
+if we looked at a polar version of the data
+
+```{r}
+ggseasonplot(temp_2000, polar = TRUE)
+```
+
+
+```{r}
+ggsubseriesplot(temp_2000)
+```
+
+
+## Stationarity
+
+Dicky-Fuller test ($H_0$: data is not stationary ($H_0$: unit root exists):
+```{r}
+adf.test(temp_2000, k = 1)
+```
+
+The dicky Fuller test suggested that the data is stationary ($H_a$ is accepted) which is weird considering the general upward trend one can notice in the data. Trying with KPASS test ($H_0:$ data is stationary)
+
+```{r}
+kpss.test(temp_2000)
+```
+
+again, the hypothesis that the data is stationary was not rejected, which means that the data might be stationary, despite the general trend in the data.
+
+by applying both tests on the original dataset:
+
+```{r}
+{print(adf.test(temperatures))
+print(kpss.test(temperatures))}
+```
+
+since $p\ll 0.01$ in KPSS test, $H_0$ is rejected which implies that the data is not stationary. the $p$ value for the Dicky-Fuller test is also small.
+
+check the differentiated data:
+```{r}
+{print(adf.test(diff(temperatures)))
+print(kpss.test(diff(temperatures)))}
+```
+the differentiated data is stationary.
+
+Despite no indication that the data has changed its trend, using a subset of the data seems to have introduced a bias in which the subset seemed stationary while it is not. maybe in this specific case, the predicted overall slope was considered to be too small to be significant. which made it the unstability unpredictable by the KPSS and ADF tests.
+
+## Fitting arima model
+
+```{r}
+{
+  show(ggAcf(diff(temp_2000, lag = 12)))
+  show(ggPacf(diff(temp_2000, lag = 12)))
+  
+}
+
+```
+
+
+
+according to the figures above, there is a strong evidence the seasonal order is suspected to be $(0, 1, 1)_{[12]}$ since the Acf has one significant spike at $1\times(12\text{ lag})$. Whereas in terms of the non-seasonal part we notice a smaller spike at $\text{lag} = 4$ in the Acf, which suggests a non-seasonal order of $(0, 0, 4)$:
+```{r}
+{
+  show(ggAcf(temp_2000))
+  show(ggPacf(temp_2000))
+}
+
+```
+
+
+
+
+
+Using auto.arima:
+```{r}
+temp_arima_fit <- auto.arima(temp_2000, approximation = FALSE, stepwise = FALSE)
+summary(temp_arima_fit)
+```
+
+trying other models
+```{r}
+minimum = temp_arima_fit$aic
+ord = c(0, 0, 4)
+for (i in 0:5) {
+  for (j in 0:5) {
+    tord = c(i, 0, j)
+    if(Arima(temp_2000, tord, c(0, 1, 1), include.drift = TRUE)$aic < minimum){
+      minimum = Arima(temp_2000, tord, c(0, 1, 1), include.drift = TRUE)$aic
+      ord = tord
+    }
+  }
+}
+
+model = Arima(temp_2000, ord, c(0, 1, 1), include.drift = TRUE)
+summary(model)
+```
+
+
+
+## Forcasting
+```{r}
+arima_Forecast_temp = forecast(model, h = 24)
+arima_Forecast_temp$mean
+```
+
+```{r}
+autoplot(arima_Forecast_temp)
+```
+
+
+the forecasted value on march 2024 is $14.69 \pm 0.60\text{ }^oC$ (with $80\%$ confidence interval) which is agrees with the experimental result of $14.14\text{ }^oC$.
+
+
+
+## residuals check
+```{r}
+checkresiduals(model, lag = 12)
+```
+
+implying that the null hypothosis is not rejected, thus the data is not correlated and corresponds to white noise
+
+
+## Regression
+
+since the data shows strong seasonality, it will be good to fit it using periodic functions ($\sin$ and $\cos$) of period $12$
+
+```{r}
+t = seq_along(temp_2000)
+
+xreg0 = cbind(
+  sin(pi*t/6),
+  cos(pi*t/6),
+  t
+)
+
+regression_fit = auto.arima(temp_2000, xreg = xreg0, approximation = FALSE, stepwise = FALSE, seasonal = TRUE)
+
+autoplot(forecast(regression_fit, xreg = xreg0))
+```
+
+
+```{r}
+model2 <- regression_fit
+summary(model2)
+```
+
+This model has slightly better stats in terms of aicc, but with fewer coefficient, notice also that the seasonality no longer appeared in the error terms, suggesting that it was captured completely by the $\sin(\omega t)$ and $\cos(\omega t)$ terms.
+
+By including a linear term, we compensate for the drift in the origional sArima model. The significance of the linear term $t$ coefficient is an evidence of non-stationarity of the original data, which in this case reflects global warming. 
+
+
+to observe the effects of global warming, I will take segment of the data centered at year $x$, I will then fit a corresponding model with arima(0, 0, 1) errors, and observe the stability of the linear term coefficient $ct$
+
+```{r}
+linear_coef <- function(DATA, x, radius = 2){
+  temporary_data = window(DATA, start = c(x-radius, 1), end = c(x+radius, 1))
+  new_t <- seq_along(temporary_data)
+  temporary_xreg = cbind(
+    sin(new_t),
+    cos(new_t),
+    new_t
+  )
+  temporary_model = Arima(y = temporary_data, order = c(0, 0, 1), seasonal = c(0, 0, 0), xreg = temporary_xreg)
+  std_error <- sqrt(diag(vcov(temporary_model)))
+  return(c(as.numeric(temporary_model$coef["new_t"]), as.numeric(sqrt(diag(vcov(temporary_model)))["new_t"])))
+}
+    
+
+```
+
+
+```{r}
+parameters =c()
+errors = c()
+
+for (i in 1:20){
+    u = linear_coef(temperatures, 2000 + i)
+    parameters <- cbind(parameters, u[1])
+    errors <- cbind(errors, u[2])
+}
+
+t_vals = c(2001:2020)
+```
+
+
+
+```{r}
+plot(t_vals, parameters, type='b', main="c\nradius: 2", ylim = c(-0.03, 0.03)) +
+  arrows(x0=t_vals, y0=parameters-errors, x1 = t_vals, y1=parameters+errors, code=3, angle = 90, length = 0.1)
+
+```
+
+The values of the trending coeficient is not significant for any value of $x$, this is most likely due to the short time intervals we were considering.
+
+I will now increase the radius:
+
+```{r}
+parameters =c()
+errors = c()
+rad = 7
+
+for (i in (1880 + rad):(2022 - rad)){
+    u = linear_coef(temperatures,  i , rad)
+    parameters <- cbind(parameters, u[1])
+    errors <- cbind(errors, u[2])
+}
+
+t_vals = c((1880 + rad):(2022 - rad))
+
+plot(t_vals, parameters, type='b', main=paste("c\nradius: ", toString(rad)), ylim = c(-0.010, 0.010)) +
+  arrows(x0=t_vals, y0=parameters-errors, x1 = t_vals, y1=parameters+errors, code=3, angle = 90, length = 0.1)
+
+```
+
+```{r}
+parameters =c()
+errors = c()
+rad = 14
+
+for (i in (1880 + rad):(2022 - rad)){
+    u = linear_coef(temperatures,  i , rad)
+    parameters <- cbind(parameters, u[1])
+    errors <- cbind(errors, u[2])
+}
+
+t_vals = c((1880 + rad):(2022 - rad))
+
+plot(t_vals, parameters, type='b', main=paste("c\nradius: ", toString(rad)), ylim = c(-0.010, 0.010)) +
+  arrows(x0=t_vals, y0=parameters-errors, x1 = t_vals, y1=parameters+errors, code=3, angle = 90, length = 0.1)
+
+```
+
+
+```{r}
+parameters =c()
+errors = c()
+rad = 22
+
+for (i in (1880 + rad):(2022 - rad)){
+    u = linear_coef(temperatures,  i , rad)
+    parameters <- cbind(parameters, u[1])
+    errors <- cbind(errors, u[2])
+}
+
+t_vals = c((1880 + rad):(2022 - rad))
+
+plot(t_vals, parameters, type='b', main=paste("c\nradius: ", toString(rad)), ylim = c(-0.010, 0.010)) +
+  arrows(x0=t_vals, y0=parameters-errors, x1 = t_vals, y1=parameters+errors, code=3, angle = 90, length = 0.1)
+
+```
+
+
+
+
+by increasing the radius (to $r = 14$), the linear coefficient looks more stable and significant, but this made it impossible to track-down any effect of the covid era on the increasing temperature coefficient.
+
+# Conclusion
+
+
+The temperature data is non stationary, as evident by the nonzero trend factor $T\propto ct \neq 0$. it also shows strong seasonality
+
+The fact that the aforementioned coefficient is positive implies that there is global warming.
+
+Due to the small number of cycles (years) after the covid era it is not possible to study the effect of covid on global warming, this is because of the instability in the model parameters
+
+Using rolling window approach, it was shown that the global warming effect have 'accelerated' since around 1960, with notable improvement since 1985.
+

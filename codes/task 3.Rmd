@@ -1,0 +1,345 @@
+---
+title: "Task3"
+author: "Khaled Hasan"
+date: "2024-03-10"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Setup
+## import libraries:
+
+```{r}
+library(fpp2)
+library(tseries)
+library(urca)
+```
+
+## Import the data:
+
+import 10 years real interest rate time series from csv
+(source:https://fred.stlouisfed.org/graph/?g=1hoLl):
+
+```{r import data and convert to time series}
+REAINTRATREARAT10Y <- read.csv("C:\\Users\\ss\\Downloads\\REAINTRATREARAT10Y.csv")
+interest <- ts(REAINTRATREARAT10Y[, "REAINTRATREARAT10Y"], frequency = 12, start = c(1982, 1))
+autoplot(interest)
+```
+
+cut a window starting from year 2000
+
+```{r}
+interest2 <- window(interest, frequency = 12, start = c(2000, 1))
+autoplot(interest2)
+```
+
+Excluding the post pandamic era (2020-):
+```{r}
+interest_precovid = window(interest2, frequency = 12, end=c(2019, 12))
+
+autoplot(interest_precovid)
+```
+
+# Arima
+
+Fist I will try the auto.arima function over the pre-covid data:
+```{r}
+fit_arima = auto.arima(interest_precovid, stepwise = FALSE, approximation = FALSE)
+summary(fit_arima)
+```
+This is somewhat different from the results obtained in the case of (interest2) time series where the post covide data was not excluded (the order was determined to be (0, 1, 1) in the latter).
+Since the data was not determined to be seasonal, I will assume that it is indeed not seasonal (this assumption was further investigated in the prior report).
+
+I will try to apply the auto.arima funciton, this time however, I will use (AIC) rather than the AICc used by the auto.arima in default mode.
+
+```{r}
+fit_arima_aic = auto.arima(interest_precovid, stepwise = FALSE, approximation = FALSE, ic = "aic")
+summary(fit_arima_aic)
+```
+
+```{r}
+minimum = 0
+for(i in 0:6){
+  for(j in 0:6){
+    if(AIC(Arima(interest_precovid, order = c(j, 1, i))) < minimum){
+      minimum = AIC(Arima(interest_precovid, order = c(j, 1, i)))
+      m = c(j, i)
+    }
+  }
+}
+{print(m)
+print(minimum)}
+```
+
+
+
+```{r}
+fit_arima_aic%>% forecast::forecast(h=12) %>% autoplot()
+```
+
+
+```{r}
+Arima(interest_precovid, c(2, 1, 5))%>% forecast::forecast(h=24) %>% autoplot()
+```
+
+```{r}
+checkresiduals(Arima(interest_precovid, c(2, 1, 5)))
+```
+
+
+# Arima with regression
+In the previous tasks, the best Arima model I obtained for the data was Arima(2, 1, 2) with no seasonal parts, this will be further investigated in this report, but including regression this time:
+
+```{r}
+# time vector
+t <- seq_along(interest_precovid)
+
+# regression vector
+treg <- length(t)+1:36
+```
+
+
+## 4th order polynomial:
+
+```{r}
+xreg = cbind(
+  t^1, t^2, t^3, t^4
+)
+
+fit1 <- auto.arima(interest_precovid, xreg = xreg, approximation = FALSE, stepwise = FALSE, seasonal = TRUE)
+autoplot(forecast(fit1, xreg = cbind(treg^1, treg^2, treg^3, treg^4)))
+```
+
+
+```{r}
+checkresiduals(fit1)
+```
+
+## second order polynomial
+
+```{r}
+fit2 <- auto.arima(interest_precovid, xreg = cbind(t^0, t^1, t^2), approximation = FALSE, stepwise = FALSE)
+autoplot(forecast(fit2, h=10, xreg = cbind(treg^0, treg^1, treg^2)))
+```
+
+
+```{r}
+checkresiduals(fit2)
+```
+
+
+## linear trend (drift)
+
+```{r}
+fit3 <- auto.arima(interest_precovid, xreg = cbind(t^0, t^1), approximation = FALSE, stepwise = FALSE)
+arima_for_fit3 <- auto.arima(interest_precovid, approximation = FALSE, stepwise = FALSE)
+summary(fit3)
+```
+```{r}
+autoplot(interest_precovid) +
+  autolayer(forecast(arima_for_fit3, h=36), series="Deterministic trend") +
+  autolayer(forecast(fit3, xreg = cbind(treg^0, treg^1), series="Stochastic trend"))
+```
+
+
+```{r}
+checkresiduals(fit3)
+```
+
+
+## first order, with long periodic cycles
+
+```{r}
+fit4 <- auto.arima(interest_precovid, xreg = cbind(t^0, t^1, cos(pi*t/60), sin(pi*t/60)), approximation = FALSE, stepwise = FALSE)
+summary(fit4)
+```
+
+
+
+```{r}
+autoplot(interest_precovid) +
+  autolayer(forecast(fit_arima, h=36), series="Deterministic trend") +
+  autolayer(forecast(fit4, xreg = cbind(treg^0, treg^1,  cos(pi*treg/60), sin(pi*treg/60)), series="Stochastic trend"))
+```
+
+
+
+## first order, with long and short periodic cycles
+
+```{r}
+fit5 <- auto.arima(interest_precovid, xreg = cbind(t^1, cos(pi*t/60), sin(pi*t/60), cos(pi/6*t), sin(pi/6*t)), approximation = FALSE, stepwise = FALSE)
+summary(fit5)
+```
+
+
+
+```{r}
+autoplot(interest_precovid) +
+  autolayer(forecast(fit_arima, h=36), series="Deterministic trend") +
+  autolayer(forecast(fit5, xreg = cbind(treg^1,  cos(pi*treg/60), sin(pi*treg/60), cos(pi/6*treg), sin(pi/6*treg))), series="Stochastic trend")
+```
+
+calculate adjusted r squared test
+```{r}
+vec_of_cor = c(cor(fitted(fit5), t^1),
+               cor(fitted(fit5), cos(pi*t/60)),
+               cor(fitted(fit5), sin(pi*t/60)),
+               cor(fitted(fit5), cos(pi/6*t)),
+               cor(fitted(fit5), sin(pi/6*t)))
+
+R_squared = (t(vec_of_cor)%*%solve(cor(data.frame(t^1, cos(pi/60*t), sin(pi/60*t), cos(pi/6*t), sin(pi/6*t))))%*%vec_of_cor)^2
+n=length(t)
+k=length(vec_of_cor)
+aR_squared = 1 - ((1 - R_squared)*(n-1)/(n - k -1))
+print(aR_squared)
+```
+
+
+
+# Parameters Stability
+
+### Rolling Window
+
+Throughout the following tests, I will be considering the 
+
+```{r}
+parameters =c()
+errors = c()
+
+for (i in 1:11){
+    parameters <- cbind(parameters, coefficients(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2009+i, 12)), c(2, 1, 0))))
+    errors <- cbind(errors, sqrt(diag(vcov(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2009+i, 12)), c(2, 1, 0)))))
+)
+}
+
+t_vals = c(2000:2010)
+```
+
+due to the small sample sizes I preferred to keep the default aicc optimization scheme, rather than the aic.
+
+```{r}
+{
+  plot(t_vals, parameters[1, ], type='b', main="ar1", ylim = c(-0.4, 0.2))+
+  arrows(x0=t_vals, y0=parameters[1, ]-errors[1, ], x1 = t_vals, y1=parameters[1, ]+errors[1, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters[2, ], type='b', main="ar2", ylim = c(-0.4, 0.2))+
+  arrows(x0=t_vals, y0=parameters[2, ]-errors[2, ], x1 = t_vals, y1=parameters[2, ]+errors[2, ], code=3, angle = 90, length = 0.1)
+}
+```
+
+
+
+```{r}
+cbind('ar1' = parameters[1,],
+      's.e(ar1)' = errors[1, ],
+      'ar2' = parameters[2,],
+      's.e(ar2)' = errors[2, ]
+      )
+```
+
+
+Try Arima (2, 1, 5)
+```{r}
+parameters2 =c()
+errors2 = c()
+
+s = 2000
+for (i in 1:11){
+    parameters2 <- cbind(parameters2, coefficients(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2009+i, 12)), c(2, 1, 5))))
+    errors2 <- cbind(errors2, sqrt(diag(vcov(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2009+i, 12)), c(2, 1, 5)))))
+)
+}
+
+t_vals = c(2000:2010)
+```
+
+
+```{r}
+{
+  plot(t_vals, parameters2[1, ], type='b', main="ar1", ylim = c(-2, 2))+
+  arrows(x0=t_vals, y0=parameters2[1, ]-errors2[1, ], x1 = t_vals, y1=parameters2[1, ]+errors2[1, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters2[2, ], type='b', main="ar2", ylim = c(-1, 0.5))+
+  arrows(x0=t_vals, y0=parameters2[2, ]-errors2[2, ], x1 = t_vals, y1=parameters2[2, ]+errors2[2, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters2[3, ], type='b', main="ma1", ylim = c(-2, 2))+
+  arrows(x0=t_vals, y0=parameters2[3, ]-errors2[3, ], x1 = t_vals, y1=parameters2[3, ]+errors2[3, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters2[4, ], type='b', main="ma2", ylim = c(-1, 2))+
+  arrows(x0=t_vals, y0=parameters2[4, ]-errors2[4, ], x1 = t_vals, y1=parameters2[4, ]+errors2[4, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters2[5, ], type='b', main="ma3", ylim = c(-0.4, 0.4))+
+  arrows(x0=t_vals, y0=parameters2[5, ]-errors2[5, ], x1 = t_vals, y1=parameters2[5, ]+errors2[5, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters2[6, ], type='b', main="ma4", ylim = c(-0.4, 0.4))+
+  arrows(x0=t_vals, y0=parameters2[6, ]-errors2[6, ], x1 = t_vals, y1=parameters2[6, ]+errors2[6, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters2[7, ], type='b', main="ma5", ylim = c(-0.4, 0.3))+
+  arrows(x0=t_vals, y0=parameters2[7, ]-errors2[7, ], x1 = t_vals, y1=parameters2[7, ]+errors2[7, ], code=3, angle = 90, length = 0.1)
+}
+```
+
+
+The parameters became highly unstable, therefore, in the following analysis I will be using Arima (2, 1, 0) order.
+
+### Change finishing point
+```{r}
+
+parameters3 =c()
+errors3 = c()
+
+s = 2000
+for (i in 1:15){
+    parameters3 <- cbind(parameters3, coefficients(Arima(window(interest, frequency = 12, start=c(2000, 1), end =c(2004+i, 12)), c(2, 1, 0))))
+    errors3 <- cbind(errors3, sqrt(diag(vcov(Arima(window(interest, frequency = 12, start=c(2000, 1), end =c(2004+i, 12)), c(2, 1, 0)))))
+)
+}
+
+t_vals3 = c(2004:2018)
+```
+
+
+```{r}
+{
+  plot(t_vals3, parameters3[1, ], type='b', main="ar1", ylim = c(-0.4, 0.2))+
+  arrows(x0=t_vals3, y0=parameters3[1, ]-errors3[1, ], x1 = t_vals3, y1=parameters3[1, ]+errors3[1, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals3, parameters3[2, ], type='b', main="ar2", ylim = c(-0.4, 0.2))+
+  arrows(x0=t_vals3, y0=parameters3[2, ]-errors3[2, ], x1 = t_vals3, y1=parameters3[2, ]+errors3[2, ], code=3, angle = 90, length = 0.1)
+}
+```
+
+
+```{r}
+cbind('ar1' = parameters3[1,],
+      's.e(ar1)' = errors3[1, ],
+      'ar2' = parameters3[2,],
+      's.e(ar2)' = errors3[2, ]
+      )
+```
+
+### Change starting point
+
+```{r}
+
+parameters4 =c()
+errors4 = c()
+
+for (i in 1:15){
+    parameters4 <- cbind(parameters4, coefficients(Arima(window(interest, frequency = 12, start=c(2000 + i, 1), end =c(2019, 12)), c(2, 1, 0)))
+                         )
+    errors4 <- cbind(errors4, sqrt(diag(vcov(Arima(window(interest, frequency = 12, start=c(2000 + i, 1), end =c(2019, 12)), c(2, 1, 0)))))
+                     )
+}
+
+t_vals4 = c(2000:2014)
+```
+
+
+```{r}
+{
+  plot(t_vals4, parameters4[1, ], type='b', main="ar1", ylim = c(-0.4, 0.2))+
+  arrows(x0=t_vals4, y0=parameters4[1, ]-errors4[1, ], x1 = t_vals4, y1=parameters4[1, ]+errors4[1, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals4, parameters4[2, ], type='b', main="ar2", ylim = c(-0.4, 0.2))+
+  arrows(x0=t_vals4, y0=parameters4[2, ]-errors4[2, ], x1 = t_vals4, y1=parameters4[2, ]+errors4[2, ], code=3, angle = 90, length = 0.1)
+}
+```
+
+
+

@@ -1,0 +1,457 @@
+---
+title: "Tasks 1 and 2"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+date: "2024-02-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Setup
+## import libraries:
+
+```{r}
+library(fpp2)
+library(tseries)
+library(urca)
+```
+
+## Import the data:
+
+import 10 years real interest rate time series from csv
+(source:https://fred.stlouisfed.org/graph/?g=1hoLl):
+
+```{r import data and convert to time series}
+REAINTRATREARAT10Y <- read.csv("C:\\Users\\ss\\Downloads\\REAINTRATREARAT10Y.csv")
+interest <- ts(REAINTRATREARAT10Y[, "REAINTRATREARAT10Y"], frequency = 12, start = c(1982, 1))
+autoplot(interest)
+```
+
+### cut a window starting from year 2000
+
+```{r}
+interest2 <- window(interest, frequency = 12, start = c(2000, 1))
+autoplot(interest2)
+```
+
+# Seasonality:
+
+```{r}
+ggseasonplot(interest2)
+```
+
+### Checking polar seasonal plot
+
+```{r}
+ggseasonplot(interest2, polar = TRUE)
+```
+
+```{r}
+ggsubseriesplot(interest2)
+```
+
+```{r}
+ggAcf(interest2)
+```
+
+Seasonal plots have no clear pattern, and nothing could be deduced out of them. The data has a roughly decreasing trend, apart from the region after the year 2020, which is probably due to the pandamic, when the investments stopped and people tended to save money in banks (in this case, banks will have high supply), and therefore the interest had a sudden decrease, after which the interest rate started to increase. In general, there are many jumps and spikes, the "ups" and "downs" in the time series are not seasonal, and their distances are not uniform, therefore they resemble a cyclic data rather than a seasonal one.
+
+# Stationarity:
+
+augmented Dicky-Fuller test (adf) for stationarity, the assumed null hypothesis $H_0$ is that the data is NOT stationary
+
+```{r}
+adf.test(interest2)
+```
+
+$p$-value is large, $H_0$ is not rejected (Not stationary)
+
+```{r}
+adf.test(diff(interest2))
+```
+
+p-value is small, $H_0$ is rejected, the timeseries is stationary.
+
+an alternitave way to find the necessary differentiation order to produce stationarity is using (ndiffs) function
+
+```{r}
+ndiffs(interest2)
+```
+
+Analyzing the resulting differentiated time-series:
+
+```{r}
+autoplot(diff(interest2), series = "Data")+
+  autolayer(fitted(meanf(diff(interest2))), series = "mean")
+```
+
+The mean is roughly constant, and close to $0$.
+
+```{r}
+ggAcf(diff(interest2))
+```
+
+The differentiated time-series has insignificant autocorrelation.
+
+```{r}
+gghistogram(diff(interest2), add.normal=TRUE) +
+ggtitle("Histogram of differentiated data") + ylab("")
+```
+
+the differentiated data has a normal distribution, which suggests that it is a white noise. To test this claim, we can use Ljung-Box test ($H_0$ assumes that the data is a white noise)
+
+```{r}
+Box.test(diff(interest2), lag = 10, type = c("Box-Pierce", "Ljung-Box"))
+```
+$p$ is relatively large, thus $H_0$ is not rejected, we can assume that the differentiated data is not correlated.
+
+
+# Arima forecast
+I'll first use auto.arima which will automatically determine the order of the ARIMA forecast:
+
+```{r}
+auto.arima(interest2, seasonal = FALSE)
+```
+
+Plotting the forecast:
+```{r}
+auto.arima(interest2, seasonal = FALSE) %>% forecast::forecast(h=12) %>% autoplot()
+```
+
+## Check residuals
+
+```{r}
+checkresiduals(auto.arima(interest2, seasonal = FALSE) %>% forecast::forecast(h=12))
+```
+
+the sum of the residuals squared:
+```{r}
+print(sum(residuals(auto.arima(interest2, seasonal = FALSE))^2))
+```
+
+the $p$ value in the Ljung-Box test is relatively big, therefore the ARIMA$(0, 0, 1)$ residuals do correspond to white noise.
+
+## suggested method from fpp2 section 8.5
+
+```{r}
+ggAcf(diff(interest2))
+```
+
+```{r}
+ggPacf(diff(interest2))
+```
+
+Neither of the two figures above is informative, None of them has a clear sinusoidal or decaying pattern, and there are no significant spikes.
+
+## Minimize AIC instead of AICc
+
+```{r}
+minimum = -96.99
+for(i in 0:6){for(j in 0:6){if(AIC(Arima(interest2, order = c(j, 1, i))) < minimum)
+  {
+  minimum = AIC(Arima(interest2, order = c(j, 1, i)))
+  m = c(j, i)
+  }}}
+print(m)
+```
+
+```{r}
+Arima(interest2, c(2, ndiffs(interest2), 2)) %>% forecast::forecast(h=12) %>% autoplot()
+```
+
+checking the fitting of this arima (ARIMA(2, 1, 2)) forecast
+
+```{r}
+arimafit <- fitted(Arima(interest2, c(2, 1, 2)))
+autoplot(arimafit, series = "Fitted") + autolayer(interest2, series = "Data")
+
+```
+
+Now checking the residuals:
+
+```{r}
+
+arimares <- residuals(Arima(interest2, c(2, 1, 2)))
+autoplot(arimares, series = "residuals")
+
+```
+
+Check autocorrelation:
+
+
+which implies that the residuals of the arima fitting does correspond to white noise
+
+Testing residuals by Ljung-box test: $H_0$: the residuals are not distinguishable from white noise.
+
+```{r}
+Box.test(arimares, lag=10, type = c("Box-Pierce", "Ljung-Box"))
+```
+
+$p$ is large, $H_0$ is not rejected and the residuals are not correlated
+
+```{r}
+checkresiduals(arimares, lag=10, test="LB")
+```
+
+```{r}
+sum(arimares^2)
+```
+
+
+# Test for model's parameter's stability:
+
+```{r, include=FALSE}
+parameters = matrix(nrow = 3, ncol = 0)
+parameters
+for (i in 0:10){
+  parameters <- cbind(parameters, c(auto.arima(window(interest2, frequency = 12, 
+                      start=c(2000+i, 1), end =c(2014+i, 1)))$arma[c(1, 6, 2)]))}
+parameters
+```
+
+```{r, include=FALSE}
+x_axis = c(2000:2010)
+{
+plot(parameters[1, ]~x_axis, type='b', col='blue', pch=16, ylim=c(min(parameters), max(parameters))) 
+plot(parameters[2, ]~x_axis, type='b', col='red', pch=16) 
+plot(parameters[3,]~x_axis, type = 'b', col = 'black', pch=16)
+}
+
+```
+
+I will use Arima(0, 1, 1) model to solve for different time windows, and see what coefficients we get with each time
+```{r}
+parameters_1 =c()
+
+s = 2000
+if(s == 1982){
+  for (i in 1:30){
+    parameters_1 <- cbind(parameters_1, coefficients(Arima(window(interest, frequency = 12, start=c(1982+i, 1), end =c(1994+i, 1)), c(0, 1, 1))))}
+}else{
+  for (i in 1:10){
+    parameters_1 <- cbind(parameters_1, coefficients(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2014+i, 1)), c(0, 1, 1))))}
+}
+
+plot(parameters_1[, ], type='b')
+```
+
+```{r}
+ndiffs(parameters_1)
+```
+which implies that the list parameters_1 is stationary
+
+
+Since the model ARIMA(0, 1, 1) specified by auto.arima has only 1 parameter (ma1), I will plot the $p$ 
+
+
+```{r}
+# define linspace equivalent function:
+linspace <- function(start, end, n) {
+  return(seq(from = start, to = end, length.out = n))
+}
+
+ma1 = linspace(-0.3, 0, 100)
+
+# define a function that sums the square of the residuals of the fixed Arima fit:
+sumressq <- function(timeseries, MA1){
+  return(sum(residuals(arima(timeseries, c(0, 1, 1), fixed = c(MA1)))^2))
+}
+
+sq_res_sum_array = numeric(100)
+
+# find the error in each point
+for(i in 1:100){
+  sq_res_sum_array[i] = sumressq(interest2, ma1[i])
+}
+
+plot(ma1, sq_res_sum_array, col="blue")
+```
+
+
+Judging by the shape of the figure, it suggests that the model parameters are stable.
+
+
+using AIC instead of residuals square sum:
+```{r}
+
+AICs = numeric(100)
+
+# find the error in each point
+for(i in 1:100){
+  AICs[i] = AIC(arima(interest2, c(0, 1, 1), fixed = c(ma1[i])))
+}
+
+plot(ma1, AICs, col="red")
+
+```
+
+
+# Task 3
+
+
+```{r}
+interest_precovid = window(interest2, frequency = 12, end=c(2019, 1))
+
+autoplot(interest_precovid)
+```
+
+
+```{r}
+t <- seq_along(interest_precovid)
+
+treg <- length(t)+1:36
+```
+
+
+
+```{r}
+xreg = cbind(
+  t^1, t^2, t^3, t^4
+)
+
+fit1 <- auto.arima(interest_precovid, xreg = xreg, approximation = FALSE, stepwise = FALSE, seasonal = TRUE)
+autoplot(forecast(fit1, xreg = cbind(treg^1, treg^2, treg^3, treg^4)))
+```
+
+
+
+```{r}
+autoplot(fitted(fit1), series = "Fitted") + autolayer(interest_precovid, series = "Original")
+```
+
+Check residuals
+```{r}
+checkresiduals(fit1)
+```
+
+
+```{r}
+fit2 <- auto.arima(interest_precovid, xreg = cbind(t0, t1, t2), approximation = FALSE, stepwise = FALSE)
+autoplot(forecast(fit2, h=10, xreg = cbind(treg^0, treg^1, treg^2)))
+```
+
+```{r}
+checkresiduals(fit2)
+```
+
+
+```{r}
+fit3 <- auto.arima(interest_precovid, xreg = cbind(t^0, t^1), approximation = FALSE, stepwise = FALSE)
+arima_for_fit3 <- auto.arima(interest_precovid, approximation = FALSE, stepwise = FALSE)
+autoplot(interest_precovid) +
+  autolayer(forecast(arima_for_fit3, h=36), series="Deterministic trend") +
+  autolayer(forecast(fit3, xreg = cbind(treg^0, treg^1), series="Stochastic trend"))
+```
+
+```{r}
+fit4 <- auto.arima(interest_precovid, xreg = cbind(t^0, t^1, cos(pi*t/60), sin(pi*t/60)), approximation = FALSE, stepwise = FALSE)
+summary(fit4)
+```
+
+```{r}
+autoplot(interest_precovid) +
+  autolayer(forecast(arima_for_fit3, h=36), series="Deterministic trend") +
+  autolayer(forecast(fit4, xreg = cbind(treg^0, treg^1,  cos(pi*treg/60), sin(pi*treg/60)), series="Stochastic trend"))
+```
+
+try to include seasonality parameters
+```{r}
+fit5 <- auto.arima(interest_precovid, xreg = cbind(t^0, t^1, cos(pi*t/60), sin(pi*t/60), cos(pi/6*t), sin(pi/6*t)), approximation = FALSE, stepwise = FALSE)
+summary(fit5)
+```
+
+
+```{r}
+autoplot(interest_precovid) +
+  autolayer(forecast(arima_for_fit3, h=36), series="Deterministic trend") +
+  autolayer(forecast(fit5, xreg = cbind(treg^0, treg^1,  cos(pi*treg/60), sin(pi*treg/60), cos(pi/6*treg), sin(pi/6*treg))), series="Stochastic trend")
+```
+
+calculate 
+```{r}
+vec_of_cor = c(cor(fitted(fit5), t^1),
+               cor(fitted(fit5), cos(pi*t/60)),
+               cor(fitted(fit5), sin(pi*t/60)),
+               cor(fitted(fit5), cos(pi/6*t)),
+               cor(fitted(fit5), sin(pi/6*t)))
+
+R_squared = (t(vec_of_cor)%*%solve(cor(data.frame(t^1, cos(pi/60*t), sin(pi/60*t), cos(pi/6*t), sin(pi/6*t))))%*%vec_of_cor)^2
+n=length(t)
+k=length(vec_of_cor)
+aR_squared = 1 - ((1 - R_squared)*(n-1)/(n - k -1))
+print(aR_squared)
+```
+
+
+
+```{r, include=FALSE}
+rfit1 = lm(interest_precovid ~ cbind(t0, t1, t2, t3, t4, cos(pi/12*t), sin(pi/12*t), cos(pi/2*t), sin(pi/2*t), sin(pi/6*t1), cos(pi/6*t1), cos(2*pi*t1), sin(2*pi*t1)))
+summary(rfit1)$adj.r.squared
+```
+
+
+
+```{r}
+forecast_values <- predict(rfit1, newdata = data.frame(t1))
+plot(t1, forecast_values, col = 'blue', sub = "fitted", xlab="t", ylab="real interest rate")+lines(t1, interest_precovid, type='l', col = 'red', sub='original')
+```
+
+
+# Parameters Stability
+
+### Rolling Window
+
+Throughout the following tests, I will be considering the 
+
+```{r}
+parameters =c()
+errors = c()
+
+s = 2000
+for (i in 1:11){
+    parameters <- cbind(parameters, coefficients(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2009+i, 12)), c(2, 1, 2))))
+    errors <- cbind(errors, sqrt(diag(vcov(Arima(window(interest, frequency = 12, start=c(2000+i, 1), end =c(2009+i, 12)), c(2, 1, 2)))))
+)
+}
+
+t_vals = c(2000:2010)
+plot(t_vals, parameters[1, ], type='b', main="ar1")+arrows(x0=t_vals, y0=parameters[1, ]-errors[1, ], x1 = t_vals, y1=parameters[1, ]+errors[1, ], code=3, angle = 90, length = 0.1)
+```
+
+due to the small sample sizes I preferred to keep the default aicc optimization scheme, rather than the aic.
+
+```{r}
+{
+  plot(t_vals, parameters[1, ], type='b', main="ar1")+
+  arrows(x0=t_vals, y0=parameters[1, ]-errors[1, ], x1 = t_vals, y1=parameters[1, ]+errors[1, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters[2, ], type='b', main="ar2")+
+  arrows(x0=t_vals, y0=parameters[2, ]-errors[2, ], x1 = t_vals, y1=parameters[2, ]+errors[2, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters[3, ], type='b', main="ma1")+
+  arrows(x0=t_vals, y0=parameters[3, ]-errors[3, ], x1 = t_vals, y1=parameters[3, ]+errors[3, ], code=3, angle = 90, length = 0.1)
+  plot(t_vals, parameters[4, ], type='b', main="ma2")+
+  arrows(x0=t_vals, y0=parameters[4, ]-errors[4, ], x1 = t_vals, y1=parameters[4, ]+errors[4, ], code=3, angle = 90, length = 0.1)
+}
+```
+
+
+
+```{r}
+cbind('ar1' = parameters[1,],
+      's.e(ar1)' = errors[1, ],
+      'ar2' = parameters[2,],
+      's.e(ar2)' = errors[2, ],
+      'ma1' = parameters[3,],
+      's.e(ma1)' = errors[3, ],
+      'ma2' = parameters[4,],
+      's.e(ma2)' = errors[4, ]
+      )
+```
+
+
+
+
+
+

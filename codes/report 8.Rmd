@@ -1,0 +1,252 @@
+---
+title: "Report 8"
+author: "Khaled Hasan"
+date: "2024-05-12"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(fpp2)
+library(tseries)
+library(urca)
+library(FinTS)
+```
+
+
+## Data
+```{r}
+GLOBALTEMPERATURE = read.csv(file = "C:\\Users/ss/Desktop/Time_series_Analysis/MyGlobalTemperetures.csv")
+global_temp = ts(GLOBALTEMPERATURE[,1], start = c(1850, 1), frequency = 12)
+northern_temp = ts(GLOBALTEMPERATURE[,2], start = c(1850, 1), frequency = 12)
+southern_temp = ts(GLOBALTEMPERATURE[,3], start = c(1850, 1), frequency = 12)
+Regional_temp = read.csv(file = "C:/Users/ss/Desktop/Time_series_Analysis/Regional_temperetures_data.csv")
+Europe_temp = ts(Regional_temp[, 3], start = c(1850, 1), frequency = 12)
+time = ts(Regional_temp[, 1], start = c(1850, 1), frequency = 12)
+```
+
+## Plots
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+
+autoplot1 <- autoplot(window(global_temp, start = c(2000, 1), freq = 12), ylab = "global")
+
+autoplot2 <- autoplot(window(northern_temp, start = c(2000, 1), freq = 12), ylab = "Northern")
+
+autoplot3 <- autoplot(window(southern_temp, start = c(2000, 1), freq = 12), ylab = "Southern")
+
+par(mfrow = c(1, 3))
+plot(autoplot1)
+plot(autoplot2)
+plot(autoplot3)
+
+layout(matrix(c(1, 2, 3), nrow = 1))
+grid.arrange(autoplot1, autoplot2, autoplot3)
+```
+Notice that the temperature averages in the southern hemi-sphere are out of phase with those from the northern Hemisphere, and that the global average is dominated by the northern hemisphere (northern hemisphere has more land mass).
+
+
+## plotting p-value
+
+### Finding best fitting model:
+```{r}
+temp_1980_afterwards = window(global_temp, start=c(1980, 1), freq=12)
+
+global_fitting_sarima = auto.arima(window(global_temp, start=c(1980, 1), freq=12), approximation = FALSE, seasonal = TRUE, stepwise = TRUE, allowdrift = TRUE)
+
+summary(global_fitting_sarima)
+```
+
+
+```{r}
+checkresiduals(global_fitting_sarima)
+```
+
+
+```{r}
+global_fitting_sarima %>% forecast(h = 24) %>% autoplot()
+```
+
+
+```{r}
+minimum = global_fitting_sarima$aic
+ord = c(2, 0, 2)
+for (i in 0:5) {
+  for (j in 0:5) {
+    tord = c(i, 0, j)
+    if(Arima(temp_1980_afterwards, tord, c(1, 1, 1), include.drift = TRUE)$aic < minimum){
+      
+      minimum = Arima(temp_1980_afterwards, tord, c(1, 1, 1), include.drift = TRUE)$aic
+      ord = tord
+    }
+  }
+}
+
+model = Arima(temp_1980_afterwards, ord, c(1, 1, 1), include.drift = TRUE)
+summary(model)
+```
+Notice that the manually fitted model has a lower aic, a higher loglikelihood and included a drift, that agrees with the trend regression fitting in the following section
+
+```{r}
+checkresiduals(model)
+```
+
+
+
+
+
+### Fitting with regression:
+```{r}
+Arima_fittng <- function(timeseries, startingPoint = start(timeseries), endingPoint = end(timeseries)){
+  cutted_data = window(timeseries, start = startingPoint, end = endingPoint, freq = 12)
+  t = seq_along(cutted_data)
+  regressors = cbind(sin(pi/6*t), cos(pi/6*t), t)
+  arima_fit = auto.arima(cutted_data, xreg = regressors, approximation = FALSE, seasonal = TRUE)
+  return(arima_fit)
+}
+
+global_fitting_Arimareg = Arima_fittng(global_temp, startingPoint = c(1987, 1))
+
+summary(global_fitting_Arimareg)
+```
+
+
+```{r}
+checkresiduals(global_fitting_Arimareg)
+```
+
+doing the same with the data obtained from Europe
+```{r}
+Europe_fitting_Arimareg = Arima_fittng(Europe_temp, startingPoint = c(1987, 1))
+
+summary(Europe_fitting_Arimareg)
+```
+
+```{r}
+checkresiduals(Europe_fitting_Arimareg)
+```
+
+
+## Plotting global warming coefficients
+
+```{r}
+
+linear_coef <- function(DATA, x, Ord, sOrd, radius = 2){
+  
+  temporary_data = window(DATA, start = c(x-radius, 1), end = c(x+radius, 1))
+  
+  new_t <- seq_along(temporary_data)
+  
+  temporary_xreg = cbind(sin(new_t*pi/6), cos(new_t*pi/6), new_t)
+  
+  temporary_model = arima(temporary_data, order = Ord, seasonal = sOrd, xreg = temporary_xreg)
+  
+  std_error <- sqrt(diag(vcov(temporary_model)))
+  
+  return(c(as.numeric(temporary_model$coef["new_t"]), as.numeric(sqrt(diag(vcov(temporary_model)))["new_t"])))
+}
+
+
+plot_Global_warming <- function(timeseries, arima_fit){
+  
+  #arima_fit = Arima_fittng(timeseries, startingPoint = c(1980, 1))
+  
+  
+  ord = arima_fit$arma
+  
+  p = ord[1]; q = ord[2]; P = ord[3]; Q = ord[4]; period = ord[5]; d = ord[6]; D = ord[7];
+  
+  parameters =c()
+  
+  errors = c()
+  
+  rad = 20
+  
+  sp = 1850
+  
+  fp = 2023
+  
+  for (i in (sp + rad):(fp - rad)){
+      u = linear_coef(timeseries,  i, c(p, d, q), c(P, D, Q) , rad)
+      parameters <- cbind(parameters, u[1])
+      errors <- cbind(errors, u[2])
+  }
+  
+  t_vals = c((sp + rad):(fp - rad))
+  
+  MyPlot = (plot(t_vals, parameters, type='b', main=paste("c\nradius: ", toString(rad)), ylim = c(-0.010, 0.010)) +
+    arrows(x0=t_vals, y0=parameters-2*errors, x1 = t_vals, y1=parameters+2*errors, code=3, angle = 90, length = 0.1))
+  
+  return(list(arima_fit, parameters, errors, MyPlot))
+}
+
+Results_for_global = plot_Global_warming(global_temp, arima_fit = global_fitting_Arimareg)
+```
+
+
+```{r}
+Results_for_Europe = plot_Global_warming(Europe_temp, arima_fit = Europe_fitting_Arimareg)
+```
+
+## Plotting p-values
+
+using the standard errors and assuming normal distribution (due to the big number of data points)
+
+```{r}
+plot_p_vals <- function(timeseries, arima_fit, r){
+  
+  #arima_fit = Arima_fittng(timeseries, startingPoint = c(1980, 1))
+  
+  ord = arima_fit$arma
+  
+  p = ord[1]; q = ord[2]; P = ord[3]; Q = ord[4]; period = ord[5]; d = ord[6]; D = ord[7];
+  
+  parameters =c()
+  
+  errors = c()
+  
+  p_values = c()
+  
+  rad = r
+  
+  sp = 1850
+  
+  fp = 2023
+  
+  for (i in (sp + rad):(fp - rad)){
+      u = linear_coef(timeseries,  i, c(p, d, q), c(P, D, Q) , rad)
+      parameters <- cbind(parameters, u[1])
+      errors <- cbind(errors, u[2])
+      
+      p = 2*pnorm(min(0, 2*u[1]), mean = u[1], sd = u[2], lower.tail = TRUE)
+      p_values = cbind(p_values, p)
+  }
+  
+  t_vals = c((sp + rad):(fp - rad))
+  
+  plot(t_vals, -log10(p_values), type='b', main=paste("p\nradius: ", toString(rad)))
+  
+}
+
+plot_p_vals(global_temp, arima_fit = global_fitting_Arimareg, 10)
+```
+
+```{r}
+plot_p_vals(global_temp, arima_fit = global_fitting_Arimareg, 20)
+```
+
+
+```{r}
+plot_p_vals(global_temp, arima_fit = global_fitting_Arimareg, 5)
+```
+
+```{r}
+plot_p_vals(global_temp, arima_fit = global_fitting_Arimareg, 5)
+```
+

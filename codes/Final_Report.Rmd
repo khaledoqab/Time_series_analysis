@@ -1,0 +1,496 @@
+---
+title: "Final Report"
+author: "Khaled Hasan"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    includes:
+      in_header: header.tex
+
+---
+
+
+\newpage
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(fpp2)
+library(tseries)
+library(urca)
+library(FinTS)
+```
+
+
+# Introduction
+In this project, I started with the aim of getting introduced to time series analysis, and their possible applications in physics, I have therefore started with exploring various concepts such as seasonality, stationarity, correlation and the many associated tests (KPSS, Augmented Dicky-Fuller and Ljung-Box tests). Different types of models were also invistegated such as regression, ARIMA, sARIMA and a mixing of the two (regression with arima errors).
+The second half of the project was putting these models in physics-related applications, namely global warming and earths temperature dynamics. Which was an interesting case to studey, due to the seasonality of the temperatures data, and the various ways of clustering the temperatures based on the spatial dimensions. Different regions provided different results. in terms of seasonality, trending and fitting coefficients.
+
+# Data
+
+The data in consideration was a cross sectional temperature data anomaly (with the climatology provided) with different resolutions from Berkeley Earth website (https://berkeleyearth.org/high-resolution-data-access-page/).
+
+## Stats
+The frequency is monthly, (12 points per year), starting from Jan-1850 lasting until Jan-2022.In terms of spatial part, the set I used had a small resulotion $(5^o \times5^o)$, since a higher resulotion sets like $(1^o \times1^o)$ $(0.25^o \times 0.25^o)$ used too much data $1$GB and $6$GB respictively, making it almost impossible to takle with my humble $8$GB RAM device. additionally, the higher resolution data were subject to more data pre-processing, which is generelly unfavourable in our models.
+
+## Code
+```{r}
+GLOBALTEMPERATURE = read.csv(file = "C:\\Users/ss/Desktop/Time_series_Analysis/MyGlobalTemperetures.csv")
+global_temp = ts(GLOBALTEMPERATURE[,1], start = c(1850, 1), frequency = 12)
+northernhemisphere_temp = ts(GLOBALTEMPERATURE[,2], start = c(1850, 1), frequency = 12)
+southernhemisphere_temp = ts(GLOBALTEMPERATURE[,3], start = c(1850, 1), frequency = 12)
+```
+
+
+## Averaging Scheme
+In order to represent a meaningful time series, the data was averaged whether Globally or on different regions. Eitherways, the averaging was corrected (weighted) by the area of the different grid elements and done in Python. It should also be noted that the temperatures in the south pole had many NANs, these were handled automatically by Pyhtons Numpy library. The averaging also excluded the water masses, these are expected to have a smaller temperature variations due to waters high specific heat capacity. The exclusion of water massses was done using a provided land mask from the dataset.
+
+# Seasonality
+There is a clear seasonality in the data with a 12 months period, however, the phase between the lower and upper hemisphere differs (Northern summers are Southern winters and vice versa) as shown in the figure below. Notice that the global temperature is dominated by the northern hemisphere, this is most likely because the north has more landmass compared to the south.
+
+## Plots
+```{r, warning=FALSE, cache=TRUE, error=FALSE}
+library(ggplot2)
+library(gridExtra)
+
+autoplot1 <- autoplot(window(global_temp, start = c(2000, 1), freq = 12), ylab = "global")
+
+autoplot2 <- autoplot(window(northernhemisphere_temp, start = c(2000, 1), freq = 12), ylab = "Northern")
+
+autoplot3 <- autoplot(window(southernhemisphere_temp, start = c(2000, 1), freq = 12), ylab = "Southern")
+
+par(mfrow = c(1, 3))
+plot(autoplot1)
+plot(autoplot2)
+plot(autoplot3)
+
+layout(matrix(c(1, 2, 3), nrow = 1))
+grid.arrange(autoplot1, autoplot2, autoplot3)
+```
+
+
+```{r}
+ggseasonplot(window(global_temp, start=1980))
+```
+
+## Removing seasonality
+The seasonality can be due to many factors, It can include a trending and cyclic behaviour, therefore, it is not always easy to separate the seasonality from a model, however, in this case, I could separate all seasonality from the global temperature data by simply includeing a sinusoidal element with a similar period in the regression part (i.e. $\sin(\frac{2\pi}{12})$ and $\cos(\frac{2\pi}{12})$).
+
+### With regression:
+```{r}
+Arima_fittng <- function(timeseries, startingPoint = start(timeseries), endingPoint = end(timeseries)){
+  cutted_data = window(timeseries, start = startingPoint, end = endingPoint, freq = 12)
+  t = seq_along(cutted_data)
+  regressors = cbind(sin(pi/6*t), cos(pi/6*t), t)
+  arima_fit = auto.arima(cutted_data, xreg = regressors, approximation = FALSE, seasonal = TRUE)
+  return(arima_fit)
+}
+
+global_fitting_Arimareg = Arima_fittng(global_temp, startingPoint = c(1987, 1))
+
+summary(global_fitting_Arimareg)
+```
+
+However, this was only possible with the global temperature data, when narrower regions are considered, it can no longer be eliminated with ease.
+
+
+```{r}
+northern_fitting_Arimareg = Arima_fittng(northernhemisphere_temp, startingPoint = c(1987, 1))
+
+summary(northern_fitting_Arimareg)
+```
+
+
+```{r}
+southern_fitting_Arimareg = Arima_fittng(southernhemisphere_temp, startingPoint = c(1987, 1))
+
+summary(southern_fitting_Arimareg)
+```
+
+# Global Warming
+One of the interesting and important topics to study in environmental sciences that is related to temperature is the global warming, as it has a huge impact on our everyday lives and on the near future of the planet. The warming phenomena is an example of trending behavior in the global temperatures, this can be measured using either drift or a linear term in the regressors. I will be using the factor of such linear coefficient term to represent warming, I will also consider a window to examine the global warming in different times throughout the last $170$ years. Therefore I made two functions (linear_coef) which should determine the global warming coefficient based on a given model type (regression with arima errors of a given orders). And plot_Global_warming which uses the same model, or produce a new model for different windows of given radius (the latter option takes too much time) and plots the global warming factor for windows centered at the time coordinate.
+
+```{r, warning=FALSE}
+
+linear_coef <- function(DATA, x, Ord, sOrd, radius = 2){
+  
+  temporary_data = window(DATA, start = c(x-radius, 1), end = c(x+radius, 1))
+  
+  new_t <- seq_along(temporary_data)
+  
+  temporary_xreg = cbind(sin(new_t*pi/6), cos(new_t*pi/6), new_t)
+  
+  temporary_model = arima(temporary_data, order = Ord, seasonal = sOrd, xreg = temporary_xreg)
+  
+  std_error <- sqrt(diag(vcov(temporary_model)))
+  
+  return(c(as.numeric(temporary_model$coef["new_t"]), as.numeric(sqrt(diag(vcov(temporary_model)))["new_t"])))
+}
+
+
+plot_Global_warming <- function(timeseries, arima_fit = NULL, r = 20){
+  
+  if(is.null(arima_fit)){
+    arima_fit = Arima_fittng(timeseries, startingPoint = c(1980, 1))
+  }
+    
+  
+  
+  ord = arima_fit$arma
+  
+  p = ord[1]; q = ord[2]; P = ord[3]; Q = ord[4]; period = ord[5]; d = ord[6]; D = ord[7];
+  
+  parameters =c()
+  
+  errors = c()
+  
+  rad = r
+  
+  sp = 1850
+  
+  fp = 2023
+  
+  for (i in (sp + rad):(fp - rad)){
+      u = linear_coef(timeseries,  i, c(p, d, q), c(P, D, Q) , rad)
+      parameters <- cbind(parameters, u[1])
+      errors <- cbind(errors, u[2])
+  }
+  
+  t_vals = c((sp + rad):(fp - rad))
+  
+  MyPlot = (plot(t_vals, parameters, type='b', main=paste("c\nradius: ", toString(rad)), ylim = c(-0.010, 0.010)) +
+    arrows(x0=t_vals, y0=parameters-2*errors, x1 = t_vals, y1=parameters+2*errors, code=3, angle = 90, length = 0.1))
+  
+  return(list(arima_fit, parameters, errors, MyPlot))
+}
+
+Results_for_global = plot_Global_warming(global_temp, arima_fit = global_fitting_Arimareg)
+```
+
+Tuning the radius of the window is essential to insure stability of the model parameters, for small windows the parameters  
+```{r}
+t1 = plot_Global_warming(global_temp, r = 10)
+```
+
+
+```{r}
+t2 = plot_Global_warming(global_temp, r = 13)
+```
+
+
+```{r}
+t3 = plot_Global_warming(global_temp, r = 15)
+```
+
+
+Notice that the global warming coefficient confidence interval might include $0$, which implies that there is no significant warming. warming is more significant when the $p$ values are small, therefore I plotted $-\log(p)$
+
+```{r}
+plot_p_vals <- function(timeseries, arima_fit, r){
+  
+  #arima_fit = Arima_fittng(timeseries, startingPoint = c(1980, 1))
+  
+  ord = arima_fit$arma
+  
+  p = ord[1]; q = ord[2]; P = ord[3]; Q = ord[4]; period = ord[5]; d = ord[6]; D = ord[7];
+  
+  parameters =c()
+  
+  errors = c()
+  
+  p_values = c()
+  
+  rad = r
+  
+  sp = 1850
+  
+  fp = 2023
+  
+  for (i in (sp + rad):(fp - rad)){
+      u = linear_coef(timeseries,  i, c(p, d, q), c(P, D, Q) , rad)
+      parameters <- cbind(parameters, u[1])
+      errors <- cbind(errors, u[2])
+      
+      p = 2*pnorm(min(0, 2*u[1]), mean = u[1], sd = u[2], lower.tail = TRUE)
+      p_values = cbind(p_values, p)
+  }
+  
+  t_vals = c((sp + rad):(fp - rad))
+  
+  plot(t_vals, -log10(p_values), type='b', main=paste("p\nradius: ", toString(rad)))
+  
+}
+
+plot_p_vals(global_temp, arima_fit = global_fitting_Arimareg, 20)
+```
+
+By looking at the above plot, we find that the global warming increase started to appear in windows centered at 1960, those include year from $1940$ onward.
+
+
+# Splitting lattiudinal strips
+
+by splitting the earth into 6 geographic zones, based on their latitudinal coordinates, the splitting was made into the following regions:
+- *northPole*: latitude from $60^o$ to $90^o$.
+- *north*: latitude from $30^o$ to $60^o$.
+- *trop_north*: latitude from $0^o$ to $30^o$.
+- *trop_south*: latitude from $0^o$ to $-30^o$.
+- *south*: latitude from $-30^o$ to $-60^o$.
+- *southPole*: latitude from $-60^o$ to $-90^o$.
+
+```{r}
+LattitudinalTemps = read.csv(file ="C:\\Users/ss/Desktop/Time_series_Analysis/LatittudCuttedTempereturesLandOnly.csv")
+northPole = ts(LattitudinalTemps[, "X3"], start = c(1850, 1), frequency = 12)
+north = ts(LattitudinalTemps[, "X2"], start = c(1850, 1), frequency = 12)
+trop_north = ts(LattitudinalTemps[, "X1"], start = c(1850, 1), frequency = 12)
+trop_south = ts(LattitudinalTemps[, "X4"], start = c(1850, 1), frequency = 12)
+south = ts(LattitudinalTemps[, "X5"], start = c(1850, 1), frequency = 12)
+southPole = ts(LattitudinalTemps[, "X6"], start = c(1850, 1), frequency = 12)
+```
+
+```{r}
+northPole_fitting_Arimareg = Arima_fittng(northPole, startingPoint = c(1980, 1))
+north_fitting_Arimareg = Arima_fittng(north, startingPoint = c(1980, 1))
+trop_north_fitting_Arimareg = Arima_fittng(trop_north, startingPoint = c(1980, 1))
+trop_south_fitting_Arimareg = Arima_fittng(trop_south, startingPoint = c(1980, 1))
+south_fitting_Arimareg = Arima_fittng(south, startingPoint = c(1980, 1))
+southPole_fitting_Arimareg = Arima_fittng(southPole, startingPoint = c(1980, 1))
+```
+
+the splitting had to insure no mixing between northern and southern regions, since these two regions behave differently.
+The analysis performed on the different regions has shown that there is stronger warming coeffecient, but this most likely due to the smaller southern land mass. Another important result is the instability 
+
+```{r}
+summary(northPole_fitting_Arimareg)
+```
+
+```{r}
+summary(north_fitting_Arimareg)
+```
+
+```{r}
+summary(trop_north_fitting_Arimareg)
+```
+
+```{r}
+summary(trop_south_fitting_Arimareg)
+```
+
+
+```{r}
+summary(south_fitting_Arimareg)
+```
+
+```{r}
+summary(southPole_fitting_Arimareg)
+```
+
+These models are less stable, and the have in general a bigger standard error.
+
+```{r}
+warming_north = plot_Global_warming(north)
+```
+
+
+
+The south pole models are highly unstable, due to the missing data, especially in early years
+```{r}
+tryCatch({warming_southPole = plot_Global_warming(southPole)}, error = function(e) {
+  cat("An error occurred: ", e$message, "\n")
+  NA
+})
+```
+
+
+#Months Clustering:
+
+For this analysis I only used the northern hemisphere
+```{r}
+MonthsSeparatedData = read.csv("C:/Users/ss/Desktop/Time_series_Analysis/NorthTemperetures_LandOnly_sepByMonth.csv")
+Jans = ts(data = MonthsSeparatedData[, 1], start = c(1850), end = c(2022), frequency = 1)
+Febs = ts(data = MonthsSeparatedData[, 2], start = c(1850), end = c(2022), frequency = 1)
+Mars = ts(data = MonthsSeparatedData[, 3], start = c(1850), end = c(2022), frequency = 1)
+Aprs = ts(data = MonthsSeparatedData[, 4], start = c(1850), end = c(2022), frequency = 1)
+Mays = ts(data = MonthsSeparatedData[, 5], start = c(1850), end = c(2022), frequency = 1)
+Juns = ts(data = MonthsSeparatedData[, 6], start = c(1850), end = c(2022), frequency = 1)
+Juls = ts(data = MonthsSeparatedData[, 7], start = c(1850), end = c(2022), frequency = 1)
+Augs = ts(data = MonthsSeparatedData[, 8], start = c(1850), end = c(2022), frequency = 1)
+Seps = ts(data = MonthsSeparatedData[, 9], start = c(1850), end = c(2022), frequency = 1)
+Octs = ts(data = MonthsSeparatedData[, 10], start = c(1850), end = c(2022), frequency = 1)
+Novs = ts(data = MonthsSeparatedData[, 11], start = c(1850), end = c(2022), frequency = 1)
+Decs = ts(data = MonthsSeparatedData[, 12], start = c(1850), end = c(2022), frequency = 1)
+```
+
+
+## Plots
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+plot1 <- autoplot(Jans)
+
+plot2 <- autoplot(Febs)
+
+plot3 <- autoplot(Mars)
+
+plot4 <- autoplot(Aprs)
+
+plot5 <- autoplot(Mays)
+
+plot6 <- autoplot(Juns)
+
+plot7 <-autoplot(Juls)
+
+plot8 <- autoplot(Augs)
+
+plot9 <- autoplot(Seps)
+
+plot10 <- autoplot(Octs)
+
+plot11 <- autoplot(Novs)
+
+plot12 <- autoplot(Decs)
+
+
+
+par(mfrow = c(2, 6))
+
+layout(matrix(c(c(1, 2, 3, 4, 5, 6), c(1, 2, 3, 4, 5, 6)), nrow = 2))
+grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8, plot9, plot10, plot11, plot12)
+```
+
+
+## Seasonality
+```{r}
+ggAcf(Juns)
+```
+
+There is no apparent seasonality in this figure.
+
+```{r}
+ggAcf(diff(diff(Juns)))
+```
+
+the acf of the differentiated data seems to suggest cyclic rather than seasonal behavior.
+
+
+## Arima Models
+```{r}
+JansArimaFit = auto.arima(Jans, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(JansArimaFit)
+```
+
+```{r}
+FebsArimaFit = auto.arima(Febs, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(FebsArimaFit)
+```
+
+
+```{r}
+MarsArimaFit = auto.arima(Mars, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(MarsArimaFit)
+```
+
+```{r}
+AprsArimaFit = auto.arima(Aprs, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(AprsArimaFit)
+```
+
+
+```{r}
+MaysArimaFit = auto.arima(Mays, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(MaysArimaFit)
+```
+
+
+```{r}
+JunsArimaFit = auto.arima(Juns, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(JunsArimaFit)
+```
+
+
+```{r}
+JulsArimaFit = auto.arima(Juls, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(JulsArimaFit)
+```
+
+
+```{r}
+AugsArimaFit = auto.arima(Augs, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(AugsArimaFit)
+
+plot(AugsArimaFit)
+```
+
+
+```{r}
+SepsArimaFit = auto.arima(Seps, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(SepsArimaFit)
+```
+
+
+```{r}
+OctsArimaFit = auto.arima(Octs, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(OctsArimaFit)
+```
+
+
+```{r}
+NovsArimaFit = auto.arima(Novs, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(NovsArimaFit)
+```
+
+```{r}
+DecsArimaFit = auto.arima(Decs, stepwise = FALSE, approximation = FALSE, allowdrift = TRUE)
+
+summary(DecsArimaFit)
+```
+Plotting ma coefficients
+
+```{r}
+months_models = cbind(c(JansArimaFit), c(FebsArimaFit), c(MarsArimaFit),
+                  c(AprsArimaFit), c(MaysArimaFit), c(JunsArimaFit),
+                  c(JulsArimaFit), c(AugsArimaFit), c(SepsArimaFit),
+                  c(OctsArimaFit), c(NovsArimaFit), c(DecsArimaFit))
+
+plot_arima_coef <- function(models, c){
+  
+  model_coefficients <- c()
+  errors <- c()
+  
+
+  for (model in 1:length(models[1, ])){
+      model_coefficients <- cbind(model_coefficients, models[, model]$coef[c])
+      std_error <- sqrt(diag(models[, model]$var.coef))[c]
+      errors <- cbind(errors, std_error)
+  }
+  
+  t_vals<-seq_along(models[1,])
+  
+  MyPlot = (plot(t_vals, model_coefficients, type='b', ylim = c(-2, 1), main = c) +
+    arrows(x0=t_vals, y0=model_coefficients-2*errors, x1 = t_vals, y1=model_coefficients+2*errors, code=3, angle = 90, length = 0.1))+
+    grid(nx = NULL, ny = NULL,
+     lty = 2,      # Grid line type
+     col = "gray", # Grid line color
+     lwd = 2)      # Grid line width
+}
+
+plot_arima_coef(months_models, "ma1")
+```
+
+
+the negative ma1 coefficients suggest a restoring force behavior, that is a warm year is likely to be followed by a colder years. and the positive drift suggests that there is a general upward trend.
